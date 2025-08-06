@@ -1,0 +1,57 @@
+version: "3"
+
+services:
+  r1:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile_r1
+    container_name: r1
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_ADMIN
+    networks:
+      - bgpnet
+
+  r2:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile_r2
+    container_name: r2
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_ADMIN
+    networks:
+      - bgpnet
+
+  r3:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile_r3
+    container_name: r3
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_ADMIN
+    networks:
+      - bgpnet
+
+  app:
+    build: .
+    container_name: bgp-leak-app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - r1
+      - r2
+      - r3
+    networks:
+      - bgpnet
+
+networks:
+  bgpnet:
+    driver: bridge

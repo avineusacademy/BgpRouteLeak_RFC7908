@@ -1,0 +1,7 @@
+    FROM frrouting/frr:latest
+
+COPY /frr-configs/r3_base.conf /etc/frr/frr.conf
+COPY frr-configs/r1_base.conf /etc/frr/vtysh.conf
+COPY frr-configs/daemons /etc/frr/daemons
+
+CMD ["/usr/lib/frr/frrinit.sh", "start"]
