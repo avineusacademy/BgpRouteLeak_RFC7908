@@ -5,9 +5,21 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 from fpdf import FPDF
 import re
+import ipaddress
 
 # ------------------------------
-# Apply Leak to Router
+# Run command inside a router
+# ------------------------------
+def run_command(router: str, command: str) -> str:
+    try:
+        docker_cmd = f"docker exec {router} vtysh -c '{command}'"
+        result = subprocess.run(docker_cmd, shell=True, capture_output=True, text=True, timeout=15)
+        return result.stdout
+    except Exception as e:
+        return f"Error: {e}"
+
+# ------------------------------
+# Apply Leak
 # ------------------------------
 def apply_leak(router: str, leak_type: str) -> str:
     if leak_type == "none":
@@ -23,117 +35,137 @@ def apply_leak(router: str, leak_type: str) -> str:
 # Fetch BGP Routes
 # ------------------------------
 def fetch_routes(router: str) -> str:
-    try:
-        cmd = f"docker exec {router} vtysh -c 'show ip bgp'"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
-        if result.returncode == 0:
-            return result.stdout
-        else:
-            return f"Failed to fetch routes from {router}."
-    except Exception as e:
-        return f"Error fetching routes: {e}"
+    return run_command(router, "show ip bgp")
 
 # ------------------------------
-# Router Diagnostic Info
+# Router Details
 # ------------------------------
 def get_router_details(router: str) -> str:
-    try:
-        commands = [
-            "show ip route bgp",
-            "show ip bgp summary",
-            "show int brief"
-        ]
-        output = ""
-        for cmd in commands:
-            docker_cmd = f"docker exec {router} vtysh -c '{cmd}'"
-            result = subprocess.run(docker_cmd, shell=True, capture_output=True, text=True, timeout=15)
-            output += f"### {cmd}\n{result.stdout or result.stderr}\n\n"
-        return output
-    except Exception as e:
-        return f"Error fetching details for {router}: {e}"
+    commands = [
+        "show ip route bgp",
+        "show ip bgp summary",
+        "show int brief"
+    ]
+    output = ""
+    for cmd in commands:
+        out = run_command(router, cmd)
+        output += f"### {cmd}\n{out}\n\n"
+    return output
 
 # ------------------------------
-# Extract Local ASN
+# Get ASN from BGP summary
 # ------------------------------
 def get_as_number(router: str) -> str:
+    out = run_command(router, "show ip bgp summary")
+    # Try to extract ASN, fallback to static known or unknown
+    match = re.search(r'local AS number (\d+)', out)
+    if match:
+        return f"AS{match.group(1)}"
+    # fallback static for example routers
+    static_asn = {"r1": "AS65001", "r2": "AS200", "r3": "AS65003"}
+    return static_asn.get(router, "AS-Unknown")
+
+# ------------------------------
+# Get interface-to-IP mapping
+# ------------------------------
+def get_interface_ip_map(router: str) -> dict:
+    out = run_command(router, "show int brief")
+    iface_map = {}
+    for line in out.splitlines():
+        # Skip empty lines or headers
+        if line.strip() == "" or line.startswith("Interface") or line.startswith("---------"):
+            continue
+        parts = line.split()
+        # Expected line format: Interface Status VRF Addresses
+        if len(parts) >= 4:
+            iface = parts[0]
+            ip_with_mask = parts[3]
+            # Skip if no IP or just '-'
+            if ip_with_mask != "-" and "/" in ip_with_mask:
+                ip = ip_with_mask.split("/")[0]  # strip mask
+                iface_map[ip] = iface
+    return iface_map
+
+# ------------------------------
+# Check if two IPs are in the same subnet (default /30)
+# ------------------------------
+def in_same_subnet(ip1, ip2, mask=30):
     try:
-        cmd = f"docker exec {router} vtysh -c 'show ip bgp summary'"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
-        if result.returncode != 0:
-            return "AS-Unknown"
-
-        match = re.search(r'BGP router identifier \S+, local AS number (\d+)', result.stdout)
-        if match:
-            return f"AS{match.group(1)}"
-        else:
-            return "AS-Unknown"
+        net1 = ipaddress.ip_network(f"{ip1}/{mask}", strict=False)
+        return ipaddress.ip_address(ip2) in net1
     except Exception:
-        return "AS-Error"
+        return False
 
 # ------------------------------
-# Extract Peer ASNs
+# Match interfaces and IPs between routers
 # ------------------------------
-def get_peer_asns(router: str) -> list:
-    peers = []
-    try:
-        cmd = f"docker exec {router} vtysh -c 'show ip bgp summary'"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
-        lines = result.stdout.splitlines()
+def get_interface_links(routers):
+    ip_to_router_iface = {}  # {IP: (router, iface)}
+    for router in routers:
+        ip_map = get_interface_ip_map(router)
+        for ip, iface in ip_map.items():
+            ip_to_router_iface[ip] = (router, iface)
 
-        start = False
-        for line in lines:
-            if line.startswith("Neighbor") or re.match(r'^\s*Neighbor', line):
-                start = True
-                continue
-            if start and line.strip():
-                parts = line.split()
-                if len(parts) >= 3:
-                    neighbor_ip = parts[0]
-                    remote_as = parts[2]
-                    peers.append((neighbor_ip, f"AS{remote_as}"))
-        return peers
-    except Exception:
-        return []
+    links = []
+    for ip1, (r1, i1) in ip_to_router_iface.items():
+        for ip2, (r2, i2) in ip_to_router_iface.items():
+            if r1 != r2 and ip1 != ip2:
+                if in_same_subnet(ip1, ip2, mask=30):
+                    link = tuple(sorted([(r1, i1, ip1), (r2, i2, ip2)]))
+                    if link not in links:
+                        links.append(link)
+    return links
 
 # ------------------------------
-# Draw Topology with ASNs
+# Draw combined topology
 # ------------------------------
-def draw_topology_figure():
+def draw_topology_figure_combined():
     routers = ["r1", "r2", "r3"]
     G = nx.DiGraph()
     node_labels = {}
     edge_labels = {}
-
-    ip_to_router = {
-        "192.168.12.1": "r1",
-        "192.168.12.2": "r2",
-        "192.168.23.2": "r2",
-        "192.168.23.3": "r3",
-    }
+    ip_map_per_router = {}
 
     for r in routers:
         asn = get_as_number(r)
-        G.add_node(r, label=f"{r}\n{asn}")
-        node_labels[r] = f"{r}\n{asn}"
+        label = f"{r}\n{asn}"
+        G.add_node(r, label=label)
+        node_labels[r] = label
 
-        # Add peers from this router
-        for peer_ip, peer_asn in get_peer_asns(r):
-            neighbor = ip_to_router.get(peer_ip)
-            if neighbor:
-                G.add_edge(r, neighbor)
-                edge_labels[(r, neighbor)] = peer_asn
+    for r in routers:
+        ip_map_per_router[r] = get_interface_ip_map(r)
+
+    ip_to_router_iface = {}
+    for r, ip_map in ip_map_per_router.items():
+        for ip, iface in ip_map.items():
+            ip_to_router_iface[ip] = (r, iface)
+
+    links = []
+    for ip1, (r1, i1) in ip_to_router_iface.items():
+        for ip2, (r2, i2) in ip_to_router_iface.items():
+            if r1 != r2 and ip1 != ip2:
+                if in_same_subnet(ip1, ip2, mask=30):
+                    link = tuple(sorted([(r1, i1, ip1), (r2, i2, ip2)]))
+                    if link not in links:
+                        links.append(link)
+
+    for (r1, i1, ip1), (r2, i2, ip2) in links:
+        G.add_edge(r1, r2)
+        G.add_edge(r2, r1)
+        edge_labels[(r1, r2)] = f"{i1}:{ip1} → {i2}:{ip2}"
+        edge_labels[(r2, r1)] = f"{i2}:{ip2} → {i1}:{ip1}"
 
     pos = nx.spring_layout(G, seed=42)
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(8, 5))
     nx.draw(G, pos, with_labels=True, labels=node_labels,
-            node_size=2000, node_color='skyblue', font_size=10, font_weight='bold',
-            arrowsize=20, ax=ax)
+            node_size=2500, node_color='lightblue',
+            font_size=10, font_weight='bold', arrowsize=20, ax=ax)
     nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8, ax=ax)
     plt.tight_layout()
     return fig
 
 # ------------------------------
-# Export PDF Report
+# PDF Export
 # ------------------------------
 def export_pdf(topology_img: BytesIO, route_tables: dict):
     pdf = FPDF()
@@ -154,7 +186,7 @@ def export_pdf(topology_img: BytesIO, route_tables: dict):
     return pdf.output(dest='S').encode('latin1')
 
 # ------------------------------
-# Leak Type Description
+# Leak Description
 # ------------------------------
 def leak_description(leak_type: str) -> str:
     desc = {
@@ -177,7 +209,7 @@ st.title("BGP Route Leak Simulator")
 routers = ["r1", "r2", "r3"]
 leak_types = ["none", "type1", "type2", "type3", "type4", "type5", "type6"]
 
-# Sidebar Controls
+# Sidebar controls
 with st.sidebar:
     selected_router = st.selectbox("Select Router to simulate leak", routers)
     selected_leak = st.selectbox("Select Leak Type", leak_types)
@@ -189,19 +221,33 @@ if apply_button:
     output = apply_leak(selected_router, selected_leak)
     st.sidebar.text_area("Leak Application Output", output, height=150)
 
-# Leak Description
+# Leak description
 st.header("Leak Type Description")
 st.write(leak_description(selected_leak))
 
-# Topology Visualization
-st.header("Network Topology")
-fig = draw_topology_figure()
+# Topology Diagram
+st.header("Network Topology with Interface Mapping")
+fig = draw_topology_figure_combined()
 topology_img = BytesIO()
 fig.savefig(topology_img, format='png')
 topology_img.seek(0)
 st.pyplot(fig)
 
-# Live BGP Route Fetch
+# Interface-Level Link Table
+st.subheader("Interface-Level Link Table")
+links = get_interface_links(routers)
+table_data = []
+for (r1, i1, ip1), (r2, i2, ip2) in links:
+    table_data.append({
+        "Router A": r1, "Interface A": i1, "IP A": ip1,
+        "Router B": r2, "Interface B": i2, "IP B": ip2
+    })
+if table_data:
+    st.table(table_data)
+else:
+    st.write("No interface links detected. Check interface IPs or subnet mask.")
+
+# Live BGP Routes
 st.header("Live BGP Routes")
 if fetch_button:
     routes = fetch_routes(fetch_router)
@@ -210,23 +256,32 @@ if fetch_button:
 # Router Details
 st.header("Router Details")
 col1, col2, col3 = st.columns(3)
-
 with col1:
     if st.button("Show r1 Details"):
         r1_details = get_router_details("r1")
         st.text_area("Details of r1", r1_details, height=400)
-
 with col2:
     if st.button("Show r2 Details"):
         r2_details = get_router_details("r2")
         st.text_area("Details of r2", r2_details, height=400)
-
 with col3:
     if st.button("Show r3 Details"):
         r3_details = get_router_details("r3")
         st.text_area("Details of r3", r3_details, height=400)
 
-# Export Report
+# Debug Interface IP maps
+st.subheader("Debug: Interface-to-IP Mapping")
+if st.button("Show Interface IP Maps"):
+    for r in routers:
+        ip_map = get_interface_ip_map(r)
+        st.write(f"Router {r} interface-IP map:")
+        if ip_map:
+            for ip, iface in ip_map.items():
+                st.write(f" - Interface: {iface}, IP: {ip}")
+        else:
+            st.write("No IPs found or parsing issue.")
+
+# PDF Export
 st.header("Export Report")
 if st.button("Generate PDF Report"):
     route_tables = {r: fetch_routes(r) for r in routers}
