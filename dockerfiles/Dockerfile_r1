@@ -41,7 +41,8 @@ RUN ./bootstrap.sh && \
       --enable-group=frr \
       --enable-vty-group=frr \
       --enable-systemd=no \
-      --enable-snmp=no && \
+      --enable-snmp=no \
+      --enable-mgmtd=yes && \
     make -j$(nproc) && make install
 
 # -----------------------------------------
@@ -55,7 +56,9 @@ RUN groupadd -r frr && useradd -r -g frr frr && \
 # 5. Copy FRR config files
 # -----------------------------------------
 COPY frr-configs/r1_base.conf /etc/frr/frr.conf
+COPY frr-configs/r1_bgp.conf /etc/frr/bgpd.conf
 COPY frr-configs/r1_base.conf /etc/frr/vtysh.conf
+COPY frr-configs/r1_base.conf /etc/frr/mgmtd.conf
 COPY frr-configs/daemons /etc/frr/daemons
 
 # -----------------------------------------
@@ -63,5 +66,7 @@ COPY frr-configs/daemons /etc/frr/daemons
 # -----------------------------------------
 ENV PATH="/usr/lib/frr:$PATH"
 
-CMD ["bash", "-c", "zebra -d -A 127.0.0.1 --limit-fds=100000 && bgpd -d -A 127.0.0.1 --limit-fds=100000 && tail -f /dev/null"]
-
+CMD bash -c "zebra -d -A 127.0.0.1 -f /etc/frr/frr.conf --limit-fds=100000 && \
+              bgpd -d -A 127.0.0.1 -f /etc/frr/bgpd.conf --limit-fds=100000 && \
+              mgmtd -d -A 127.0.0.1 -f /etc/frr/mgmtd.conf --limit-fds=100000 && \
+              tail -f /dev/null"
