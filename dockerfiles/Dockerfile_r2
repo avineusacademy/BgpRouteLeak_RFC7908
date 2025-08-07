@@ -1,4 +1,6 @@
 FROM ubuntu:22.04
+MAINTAINER avineusacademy@gmail.com
+
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -70,5 +72,5 @@ ENV PATH="/usr/lib/frr:$PATH"
 
 CMD bash -c "zebra -d -A 127.0.0.1 -f /etc/frr/frr.conf --limit-fds=100000 && \
               bgpd -d -A 127.0.0.1 -f /etc/frr/bgpd.conf --limit-fds=100000 && \
-              mgmtd -d -A 127.0.0.1 -f /etc/frr/mgmtd.conf --limit-fds=100000 && \
+              mgmtd -d -A 127.0.0.1 --limit-fds=100000 && \
               tail -f /dev/null"
