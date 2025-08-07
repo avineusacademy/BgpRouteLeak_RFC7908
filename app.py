@@ -26,6 +26,22 @@ def fetch_routes(router: str) -> str:
     except Exception as e:
         return f"Error fetching routes: {e}"
 
+def get_router_details(router: str) -> str:
+    try:
+        commands = [
+            "show ip route bgp",
+            "show ip bgp summary",
+            "show int brief"
+        ]
+        output = ""
+        for cmd in commands:
+            docker_cmd = f"docker exec {router} vtysh -c '{cmd}'"
+            result = subprocess.run(docker_cmd, shell=True, capture_output=True, text=True, timeout=15)
+            output += f"### {cmd}\n{result.stdout or result.stderr}\n\n"
+        return output
+    except Exception as e:
+        return f"Error fetching details for {router}: {e}"
+
 def draw_topology_figure():
     G = nx.DiGraph()
     nodes = {"r1": "AS65001", "r2": "AS200", "r3": "AS65003"}
@@ -102,6 +118,27 @@ if fetch_button:
     routes = fetch_routes(fetch_router)
     st.text_area(f"BGP Routes on {fetch_router}", routes, height=300)
 
+# 👉 New Section: Router Details (added below)
+st.header("Router Details")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if st.button("Show r1 Details"):
+        r1_details = get_router_details("r1")
+        st.text_area("Details of r1", r1_details, height=400)
+
+with col2:
+    if st.button("Show r2 Details"):
+        r2_details = get_router_details("r2")
+        st.text_area("Details of r2", r2_details, height=400)
+
+with col3:
+    if st.button("Show r3 Details"):
+        r3_details = get_router_details("r3")
+        st.text_area("Details of r3", r3_details, height=400)
+
+# PDF Export
 st.header("Export Report")
 if st.button("Generate PDF Report"):
     route_tables = {r: fetch_routes(r) for r in routers}

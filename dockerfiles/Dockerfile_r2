@@ -61,7 +61,7 @@ RUN groupadd -r frr && useradd -r -g frr frr && \
 COPY frr-configs/r2_base.conf /etc/frr/frr.conf
 COPY frr-configs/r2_bgp.conf /etc/frr/bgpd.conf
 COPY frr-configs/r2_base.conf /etc/frr/vtysh.conf
-COPY frr-configs/r1_base.conf /etc/frr/mgmtd.conf
+COPY frr-configs/r2_base.conf /etc/frr/mgmtd.conf
 COPY frr-configs/daemons /etc/frr/daemons
 
 
