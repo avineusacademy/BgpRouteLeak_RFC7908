@@ -10,6 +10,9 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - \
        > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y docker-ce-cli
 
+RUN mkdir -p /var/log/frr 
+#RUN chown frr:frr /var/log/frr
+
 COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 

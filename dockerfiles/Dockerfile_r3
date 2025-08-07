@@ -1,7 +1,67 @@
-    FROM frrouting/frr:latest
+FROM ubuntu:22.04
 
-COPY /frr-configs/r3_base.conf /etc/frr/frr.conf
-COPY frr-configs/r1_base.conf /etc/frr/vtysh.conf
+ENV DEBIAN_FRONTEND=noninteractive
+
+# -----------------------------------------
+# 1. Install required build dependencies
+# -----------------------------------------
+RUN apt-get update && apt-get install -y \
+    git cmake build-essential pkg-config autoconf automake libtool \
+    libreadline-dev libjson-c-dev libpam0g-dev libpcre3-dev libpcre2-dev libssl-dev \
+    bison flex python3-pytest python3-dev python3-ply \
+    iproute2 iputils-ping net-tools libelf-dev curl ca-certificates libcap-dev \
+    protobuf-compiler protobuf-c-compiler libprotobuf-c-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------
+# 2. Clone & build latest libyang (from master)
+# -----------------------------------------
+RUN git clone --depth 1 https://github.com/CESNET/libyang.git && \
+    cd libyang && \
+    mkdir build && cd build && \
+    cmake -DCMAKE_INSTALL_PREFIX=/usr -DGEN_LANGUAGE_BINDINGS=OFF -DENABLE_BUILD_TESTS=OFF .. && \
+    make -j$(nproc) && make install && \
+    cd ../.. && rm -rf libyang
+
+# -----------------------------------------
+# 3. Clone & build latest FRR (from master)
+# -----------------------------------------
+RUN git clone --depth 1 https://github.com/FRRouting/frr.git /frr
+
+WORKDIR /frr
+
+RUN ./bootstrap.sh && \
+    ./configure \
+      --prefix=/usr \
+      --sysconfdir=/etc/frr \
+      --localstatedir=/var/run/frr \
+      --sbindir=/usr/lib/frr \
+      --enable-exampledir=/usr/share/doc/frr/examples/ \
+      --enable-user=frr \
+      --enable-group=frr \
+      --enable-vty-group=frr \
+      --enable-systemd=no \
+      --enable-snmp=no && \
+    make -j$(nproc) && make install
+
+# -----------------------------------------
+# 4. Setup FRR environment (users, dirs)
+# -----------------------------------------
+RUN groupadd -r frr && useradd -r -g frr frr && \
+    mkdir -p /etc/frr /var/log/frr /var/run/frr /var/lib/frr && \
+    chown -R frr:frr /etc/frr /var/log/frr /var/run/frr /var/lib/frr
+
+# -----------------------------------------
+# 5. Copy FRR config files
+# -----------------------------------------
+COPY frr-configs/r3_base.conf /etc/frr/frr.conf
+COPY frr-configs/r3_base.conf /etc/frr/vtysh.conf
 COPY frr-configs/daemons /etc/frr/daemons
 
-CMD ["/usr/lib/frr/frrinit.sh", "start"]
+# -----------------------------------------
+# 6. Add FRR daemons to PATH
+# -----------------------------------------
+ENV PATH="/usr/lib/frr:$PATH"
+
+
+CMD ["bash", "-c", "zebra -d -A 127.0.0.1 --limit-fds=100000 && bgpd -d -A 127.0.0.1 --limit-fds=100000 && tail -f /dev/null"]
