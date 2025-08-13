@@ -32,6 +32,17 @@ def apply_leak(router: str, leak_type: str) -> str:
         return f"Error applying leak: {e}"
 
 # ------------------------------
+# Apply R1 Community Config
+# ------------------------------
+def apply_r1_community_config() -> str:
+    cmd = "/bin/bash /app/scripts/apply_r1_config.sh"
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
+        return result.stdout + result.stderr
+    except Exception as e:
+        return f"Error applying R1 community config: {e}"
+
+# ------------------------------
 # Fetch BGP Routes
 # ------------------------------
 def fetch_routes(router: str) -> str:
@@ -60,7 +71,7 @@ def get_as_number(router: str) -> str:
     match = re.search(r'local AS number (\d+)', out)
     if match:
         return f"AS{match.group(1)}"
-    static_asn = {"r1": "AS65001", "r2": "AS200", "r3": "AS65003"}
+    static_asn = {"r1": "AS100", "r2": "AS200", "r3": "AS65003"}
     return static_asn.get(router, "AS-Unknown")
 
 # ------------------------------
@@ -82,7 +93,7 @@ def get_interface_ip_map(router: str) -> dict:
     return iface_map
 
 # ------------------------------
-# Check if two IPs are in the same subnet (default /30)
+# Check if two IPs are in the same subnet
 # ------------------------------
 def in_same_subnet(ip1, ip2, mask=30):
     try:
@@ -112,12 +123,11 @@ def get_interface_links(routers):
     return links
 
 # ------------------------------
-# Extract prefixes learned from 'show ip route bgp'
+# Extract prefixes from BGP routes
 # ------------------------------
 def get_prefixes_from_route_output(output: str) -> list:
     prefixes = []
     for line in output.splitlines():
-        # Match lines starting with B (BGP) routes, e.g. B>* 2.2.2.2/32 ...
         match = re.match(r'B.*?(\d+\.\d+\.\d+\.\d+\/\d+)', line)
         if match:
             prefixes.append(match.group(1))
@@ -126,14 +136,13 @@ def get_prefixes_from_route_output(output: str) -> list:
     return prefixes
 
 # ------------------------------
-# Draw combined topology with prefixes below nodes
+# Draw topology with prefixes
 # ------------------------------
 def draw_topology_figure_combined():
     routers = ["r1", "r2", "r3"]
     G = nx.DiGraph()
     node_labels = {}
 
-    # Gather router prefixes
     router_prefixes = {}
     for r in routers:
         route_output = run_command(r, "show ip route bgp")
@@ -174,12 +183,8 @@ def draw_topology_figure_combined():
             node_size=2500, node_color='lightblue',
             font_size=10, font_weight='bold', arrowsize=20, ax=ax)
 
-    # Draw prefixes below each node with white background box for readability
     for r, prefix_list in router_prefixes.items():
-        if prefix_list and prefix_list != ["No prefixes"]:
-            prefix_text = "\n".join(prefix_list)
-        else:
-            prefix_text = "No prefixes"
+        prefix_text = "\n".join(prefix_list) if prefix_list else "No prefixes"
         x, y = pos[r]
         ax.text(x, y - 0.08, prefix_text, fontsize=8, fontfamily='monospace',
                 ha='center', va='top',
@@ -215,12 +220,7 @@ def export_pdf(topology_img: BytesIO, route_tables: dict):
 def leak_description(leak_type: str) -> str:
     desc = {
         "none": "No leak simulation active.",
-        "type1": "Type 1: Simple export leak — routes advertised incorrectly outside the AS.",
-        "type2": "Type 2: Export of customer routes to a peer without proper filtering.",
-        "type3": "Type 3: Community attribute misconfiguration causing leaks.",
-        "type4": "Type 4: AS-path stripping or prepending leak.",
-        "type5": "Type 5: Route-map misconfiguration allowing unwanted prefixes.",
-        "type6": "Type 6: Prefix-list based leak with automatic cleanup."
+        "type1": "Type 1: Export leak — R2 re-advertises a route learned from R1 to R3 without proper policy.",
     }
     return desc.get(leak_type, "Unknown leak type selected.")
 
@@ -231,7 +231,7 @@ st.set_page_config(page_title="BGP Route Leak Simulator", layout="wide")
 st.title("BGP Route Leak Simulator")
 
 routers = ["r1", "r2", "r3"]
-leak_types = ["none", "type1", "type2", "type3", "type4", "type5", "type6"]
+leak_types = ["none", "type1"]
 
 # Sidebar controls
 with st.sidebar:
@@ -240,7 +240,12 @@ with st.sidebar:
     apply_button = st.button("Apply Leak")
     fetch_router = st.selectbox("Select Router to fetch routes", routers)
     fetch_button = st.button("Fetch Live Routes")
+    st.markdown("---")
+    if st.button("Apply R1 Community Config"):
+        output = apply_r1_community_config()
+        st.text_area("R1 Config Output", output, height=150)
 
+# Leak application
 if apply_button:
     output = apply_leak(selected_router, selected_leak)
     st.sidebar.text_area("Leak Application Output", output, height=150)
@@ -282,18 +287,15 @@ st.header("Router Details")
 col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("Show r1 Details"):
-        r1_details = get_router_details("r1")
-        st.text_area("Details of r1", r1_details, height=400)
+        st.text_area("Details of r1", get_router_details("r1"), height=400)
 with col2:
     if st.button("Show r2 Details"):
-        r2_details = get_router_details("r2")
-        st.text_area("Details of r2", r2_details, height=400)
+        st.text_area("Details of r2", get_router_details("r2"), height=400)
 with col3:
     if st.button("Show r3 Details"):
-        r3_details = get_router_details("r3")
-        st.text_area("Details of r3", r3_details, height=400)
+        st.text_area("Details of r3", get_router_details("r3"), height=400)
 
-# Debug Interface IP maps
+# Debug Interface Mapping
 st.subheader("Debug: Interface-to-IP Mapping")
 if st.button("Show Interface IP Maps"):
     for r in routers:
