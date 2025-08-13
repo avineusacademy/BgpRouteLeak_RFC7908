@@ -1,0 +1,84 @@
+Step-by-step explanation:
+R1 originates 1.1.1.1/32 into BGP, tagging it with community 100:100 via route-map TAG_COMM.
+R1 advertises this prefix to R2 with:
+Next hop 0.0.0.0 (originated locally)
+Community 100:100
+Origin i (IGP)
+R2 receives this route with community 100:100.
+R2 has a route-map LEAK1 applied outbound towards R3, which matches community 100:100 and sets local preference 50.
+R2 advertises the route to R3 with:
+Next hop as its own interface (30.30.1.2)
+Local preference lowered to 50 (instead of default 100)
+R3 receives this route from R2 and installs it with the attributes set by R2.
+
+Summary:
+The route-map on R1 introduces a community tag (100:100) on its locally originated route 1.1.1.1/32.
+This community acts as a "marker" to R2, allowing it to identify this route as type 1 (originated locally by R1).
+R2 uses this marker to selectively modify the route attribute (local preference) when leaking the route to R3.
+The route remains a type 1 BGP route on R1 because it’s locally originated and advertised with next-hop 0.0.0.0 and origin i.
+
+In R1
+=====
+r1# show ip bgp 1.1.1.1/32
+BGP routing table entry for 1.1.1.1/32, version 4
+Paths: (1 available, best #1, table default)
+  Advertised to peers:
+  20.20.1.3
+  Local
+    0.0.0.0 from 0.0.0.0 (1.1.1.1)
+      Origin IGP, metric 0, weight 32768, valid, sourced, local, best (First path received)
+      Community: 100:100
+      Last update: Wed Aug 13 13:48:33 2025
+    Characteristics:
+      BGPID: 1.1.1.1
+r1# 
+
+r1# show ip bgp community 100:100
+BGP table version is 4, local router ID is 1.1.1.1, vrf id 0
+Default local pref 100, local AS 100
+Status codes:  s suppressed, d damped, h history, u unsorted, * valid, > best, = multipath,
+               i internal, r RIB-failure, S Stale, R Removed
+Nexthop codes: @NNN nexthop's vrf id, < announce-nh-self
+Origin codes:  i - IGP, e - EGP, ? - incomplete
+RPKI validation codes: V valid, I invalid, N Not found
+
+     Network          Next Hop            Metric LocPrf Weight Path
+ *>  1.1.1.1/32       0.0.0.0                  0         32768 i
+
+Displayed 1 routes and 3 total paths
+r1# 
+
+r1# show ip bgp neighbors 20.20.1.3 advertised-routes  detail 
+BGP table version is 4, local router ID is 1.1.1.1, vrf id 0
+Default local pref 100, local AS 100
+BGP routing table entry for 1.1.1.1/32, version 4
+Paths: (1 available, best #1, table default)
+  Advertised to peers:
+  20.20.1.3
+  Local
+    0.0.0.0 from 0.0.0.0 (1.1.1.1)
+      Origin IGP, metric 0, weight 32768, valid, sourced, local, best (First path received)
+      Community: 100:100            ----> Attached Community
+      Last update: Wed Aug 13 13:48:33 2025
+    Characteristics:
+      BGPID: 1.1.1.1
+BGP routing table entry for 2.2.2.2/32, version 2
+Paths: (1 available, best #1, table default)
+  Advertised to peers:
+  20.20.1.3
+  200
+    0.0.0.0 from 20.20.1.3 (2.2.2.2)
+      Origin IGP, valid, external, best (First path received)
+      Last update: Wed Aug 13 13:48:18 2025
+BGP routing table entry for 3.3.3.3/32, version 3
+Paths: (1 available, best #1, table default)
+  Advertised to peers:
+  20.20.1.3
+  200 65003
+    0.0.0.0 from 20.20.1.3 (2.2.2.2)
+      Origin IGP, valid, external, best (First path received)
+      Last update: Wed Aug 13 13:48:18 2025
+
+Total number of prefixes 3
+r1# 
+
