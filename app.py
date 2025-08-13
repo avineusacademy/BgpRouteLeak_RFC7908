@@ -24,7 +24,7 @@ def run_command(router: str, command: str) -> str:
 def apply_leak(router: str, leak_type: str) -> str:
     if leak_type == "none":
         leak_type = "cleanup"
-    cmd = f"/scripts/apply_leak.sh {router} {leak_type}"
+    cmd = f"/bin/bash /app/scripts/apply_leak.sh {router} {leak_type}"
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
         return result.stdout + result.stderr
@@ -57,11 +57,9 @@ def get_router_details(router: str) -> str:
 # ------------------------------
 def get_as_number(router: str) -> str:
     out = run_command(router, "show ip bgp summary")
-    # Try to extract ASN, fallback to static known or unknown
     match = re.search(r'local AS number (\d+)', out)
     if match:
         return f"AS{match.group(1)}"
-    # fallback static for example routers
     static_asn = {"r1": "AS65001", "r2": "AS200", "r3": "AS65003"}
     return static_asn.get(router, "AS-Unknown")
 
@@ -72,17 +70,14 @@ def get_interface_ip_map(router: str) -> dict:
     out = run_command(router, "show int brief")
     iface_map = {}
     for line in out.splitlines():
-        # Skip empty lines or headers
         if line.strip() == "" or line.startswith("Interface") or line.startswith("---------"):
             continue
         parts = line.split()
-        # Expected line format: Interface Status VRF Addresses
         if len(parts) >= 4:
             iface = parts[0]
             ip_with_mask = parts[3]
-            # Skip if no IP or just '-'
             if ip_with_mask != "-" and "/" in ip_with_mask:
-                ip = ip_with_mask.split("/")[0]  # strip mask
+                ip = ip_with_mask.split("/")[0]
                 iface_map[ip] = iface
     return iface_map
 
@@ -100,7 +95,7 @@ def in_same_subnet(ip1, ip2, mask=30):
 # Match interfaces and IPs between routers
 # ------------------------------
 def get_interface_links(routers):
-    ip_to_router_iface = {}  # {IP: (router, iface)}
+    ip_to_router_iface = {}
     for router in routers:
         ip_map = get_interface_ip_map(router)
         for ip, iface in ip_map.items():
@@ -117,14 +112,33 @@ def get_interface_links(routers):
     return links
 
 # ------------------------------
-# Draw combined topology
+# Extract prefixes learned from 'show ip route bgp'
+# ------------------------------
+def get_prefixes_from_route_output(output: str) -> list:
+    prefixes = []
+    for line in output.splitlines():
+        # Match lines starting with B (BGP) routes, e.g. B>* 2.2.2.2/32 ...
+        match = re.match(r'B.*?(\d+\.\d+\.\d+\.\d+\/\d+)', line)
+        if match:
+            prefixes.append(match.group(1))
+    if not prefixes:
+        return ["No prefixes"]
+    return prefixes
+
+# ------------------------------
+# Draw combined topology with prefixes below nodes
 # ------------------------------
 def draw_topology_figure_combined():
     routers = ["r1", "r2", "r3"]
     G = nx.DiGraph()
     node_labels = {}
-    edge_labels = {}
-    ip_map_per_router = {}
+
+    # Gather router prefixes
+    router_prefixes = {}
+    for r in routers:
+        route_output = run_command(r, "show ip route bgp")
+        prefixes = get_prefixes_from_route_output(route_output)
+        router_prefixes[r] = prefixes
 
     for r in routers:
         asn = get_as_number(r)
@@ -132,6 +146,7 @@ def draw_topology_figure_combined():
         G.add_node(r, label=label)
         node_labels[r] = label
 
+    ip_map_per_router = {}
     for r in routers:
         ip_map_per_router[r] = get_interface_ip_map(r)
 
@@ -152,15 +167,24 @@ def draw_topology_figure_combined():
     for (r1, i1, ip1), (r2, i2, ip2) in links:
         G.add_edge(r1, r2)
         G.add_edge(r2, r1)
-        edge_labels[(r1, r2)] = f"{i1}:{ip1} → {i2}:{ip2}"
-        edge_labels[(r2, r1)] = f"{i2}:{ip2} → {i1}:{ip1}"
 
     pos = nx.spring_layout(G, seed=42)
     fig, ax = plt.subplots(figsize=(8, 5))
     nx.draw(G, pos, with_labels=True, labels=node_labels,
             node_size=2500, node_color='lightblue',
             font_size=10, font_weight='bold', arrowsize=20, ax=ax)
-    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8, ax=ax)
+
+    # Draw prefixes below each node with white background box for readability
+    for r, prefix_list in router_prefixes.items():
+        if prefix_list and prefix_list != ["No prefixes"]:
+            prefix_text = "\n".join(prefix_list)
+        else:
+            prefix_text = "No prefixes"
+        x, y = pos[r]
+        ax.text(x, y - 0.08, prefix_text, fontsize=8, fontfamily='monospace',
+                ha='center', va='top',
+                bbox=dict(facecolor='white', alpha=0.6, edgecolor='gray', boxstyle='round,pad=0.3'))
+
     plt.tight_layout()
     return fig
 
@@ -226,7 +250,7 @@ st.header("Leak Type Description")
 st.write(leak_description(selected_leak))
 
 # Topology Diagram
-st.header("Network Topology with Interface Mapping")
+st.header("Network Topology with Interface Mapping and Learned Prefixes")
 fig = draw_topology_figure_combined()
 topology_img = BytesIO()
 fig.savefig(topology_img, format='png')

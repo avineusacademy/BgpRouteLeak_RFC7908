@@ -2,6 +2,11 @@
 
 set -e
 
+echo "Running apply_leak.sh with args: $@"
+which bash
+which sh
+ls -l $(dirname "$0")
+
 ROUTER=$1
 LEAK_TYPE=$2
 
